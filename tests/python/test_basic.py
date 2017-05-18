@@ -2,6 +2,8 @@
 import numpy as np
 import xgboost as xgb
 import unittest
+import itertools
+import json
 
 dpath = 'demo/data/'
 rng = np.random.RandomState(1994)
@@ -170,6 +172,39 @@ class TestBasic(unittest.TestCase):
         fscores = bst.get_fscore()
         assert scores1 == fscores
 
+    def test_dump(self):
+        data = np.random.randn(100, 2)
+        target = np.array([0, 1] * 50)
+        features = ['Feature1', 'Feature2']
+
+        dm = xgb.DMatrix(data, label=target, feature_names=features)
+        params = {'objective': 'binary:logistic',
+                  'eval_metric': 'logloss',
+                  'eta': 0.3,
+                  'max_depth': 1}
+
+        bst = xgb.train(params, dm, num_boost_round=1)
+
+        # number of feature importances should == number of features
+        dump1 = bst.get_dump()
+        self.assertEqual(len(dump1), 1, "Expected only 1 tree to be dumped.")
+        self.assertEqual(len(dump1[0].splitlines()), 3,
+                         "Expected 1 root and 2 leaves - 3 lines in dump.")
+
+        dump2 = bst.get_dump(with_stats=True)
+        self.assertEqual(dump2[0].count('\n'), 3,
+                         "Expected 1 root and 2 leaves - 3 lines in dump.")
+        self.assertGreater(dump2[0].find('\n'), dump1[0].find('\n'),
+                           "Expected more info when with_stats=True is given.")
+
+        dump3 = bst.get_dump(dump_format="json")
+        dump3j = json.loads(dump3[0])
+        self.assertEqual(dump3j["nodeid"], 0, "Expected the root node on top.")
+
+        dump4 = bst.get_dump(dump_format="json", with_stats=True)
+        dump4j = json.loads(dump4[0])
+        self.assertIn("gain", dump4j, "Expected 'gain' to be dumped in JSON.")
+
     def test_load_file_invalid(self):
         self.assertRaises(xgb.core.XGBoostError, xgb.Booster,
                           model_file='incorrect_path')
@@ -207,3 +242,35 @@ class TestBasic(unittest.TestCase):
         cv = xgb.cv(params, dm, num_boost_round=10, nfold=10, as_pandas=False)
         assert isinstance(cv, dict)
         assert len(cv) == (4)
+
+    def test_cv_no_shuffle(self):
+        dm = xgb.DMatrix(dpath + 'agaricus.txt.train')
+        params = {'max_depth': 2, 'eta': 1, 'silent': 1, 'objective': 'binary:logistic'}
+
+        # return np.ndarray
+        cv = xgb.cv(params, dm, num_boost_round=10, shuffle=False, nfold=10, as_pandas=False)
+        assert isinstance(cv, dict)
+        assert len(cv) == (4)
+
+
+def test_contributions():
+    dtrain = xgb.DMatrix(dpath + 'agaricus.txt.train')
+    dtest = xgb.DMatrix(dpath + 'agaricus.txt.test')
+
+    def test_fn(max_depth, num_rounds):
+        # train
+        params = {'max_depth': max_depth, 'eta': 1, 'silent': 1}
+        bst = xgb.train(params, dtrain, num_boost_round=num_rounds)
+
+        # predict
+        preds = bst.predict(dtest)
+        contribs = bst.predict(dtest, pred_contribs=True)
+
+        # result should be (number of features + BIAS) * number of rows
+        assert contribs.shape == (dtest.num_row(), dtest.num_col() + 1)
+
+        # sum of contributions should be same as predictions
+        np.testing.assert_array_almost_equal(np.sum(contribs, axis=1), preds)
+
+    for max_depth, num_rounds in itertools.product(range(0, 3), range(1, 5)):
+        yield test_fn, max_depth, num_rounds

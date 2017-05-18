@@ -68,12 +68,19 @@ SEXP XGDMatrixCreateFromMat_R(SEXP mat,
   SEXP dim = getAttrib(mat, R_DimSymbol);
   size_t nrow = static_cast<size_t>(INTEGER(dim)[0]);
   size_t ncol = static_cast<size_t>(INTEGER(dim)[1]);
-  double *din = REAL(mat);
+  const bool is_int = TYPEOF(mat) == INTSXP;
+  double *din;
+  int *iin;
+  if (is_int) {
+    iin = INTEGER(mat);
+  } else {
+    din = REAL(mat);
+  }
   std::vector<float> data(nrow * ncol);
   #pragma omp parallel for schedule(static)
   for (omp_ulong i = 0; i < nrow; ++i) {
     for (size_t j = 0; j < ncol; ++j) {
-      data[i * ncol +j] = din[i + nrow * j];
+      data[i * ncol +j] = is_int ? static_cast<float>(iin[i + nrow * j]) : din[i + nrow * j];
     }
   }
   DMatrixHandle handle;
@@ -350,20 +357,37 @@ SEXP XGBoosterModelToRaw_R(SEXP handle) {
   return ret;
 }
 
-SEXP XGBoosterDumpModel_R(SEXP handle, SEXP fmap, SEXP with_stats) {
+SEXP XGBoosterDumpModel_R(SEXP handle, SEXP fmap, SEXP with_stats, SEXP dump_format) {
   SEXP out;
   R_API_BEGIN();
   bst_ulong olen;
   const char **res;
-  CHECK_CALL(XGBoosterDumpModel(R_ExternalPtrAddr(handle),
+  const char *fmt = CHAR(asChar(dump_format));
+  CHECK_CALL(XGBoosterDumpModelEx(R_ExternalPtrAddr(handle),
                                 CHAR(asChar(fmap)),
                                 asInteger(with_stats),
+                                fmt,
                                 &olen, &res));
   out = PROTECT(allocVector(STRSXP, olen));
-  for (size_t i = 0; i < olen; ++i) {
+  if (!strcmp("json", fmt)) {
     std::stringstream stream;
-    stream <<  "booster[" << i <<"]\n" << res[i];
-    SET_STRING_ELT(out, i, mkChar(stream.str().c_str()));
+    stream <<  "[\n";
+    for (size_t i = 0; i < olen; ++i) {
+      stream << res[i];
+      if (i < olen - 1) {
+        stream << ",\n";
+      } else {
+        stream << "\n";
+      }
+    }
+    stream <<  "]";
+    SET_STRING_ELT(out, 0, mkChar(stream.str().c_str()));
+  } else {
+    for (size_t i = 0; i < olen; ++i) {
+      std::stringstream stream;
+      stream <<  "booster[" << i <<"]\n" << res[i];
+      SET_STRING_ELT(out, i, mkChar(stream.str().c_str()));
+    }
   }
   R_API_END();
   UNPROTECT(1);

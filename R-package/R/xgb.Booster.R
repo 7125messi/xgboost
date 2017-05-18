@@ -1,20 +1,20 @@
-# Construct a Booster from cachelist
+# Construct an internal xgboost Booster and return a handle to it.
 # internal utility function
-xgb.Booster <- function(params = list(), cachelist = list(), modelfile = NULL) {
+xgb.Booster.handle <- function(params = list(), cachelist = list(), modelfile = NULL) {
   if (typeof(cachelist) != "list" ||
-      any(sapply(cachelist, class) != 'xgb.DMatrix')) {
-    stop("xgb.Booster only accepts list of DMatrix as cachelist")
+      !all(sapply(cachelist, inherits, 'xgb.DMatrix'))) {
+    stop("cachelist must be a list of xgb.DMatrix objects")
   }
 
-  handle <- .Call("XGBoosterCreate_R", cachelist, PACKAGE = "xgboost")
+  handle <- .Call(XGBoosterCreate_R, cachelist)
   if (!is.null(modelfile)) {
     if (typeof(modelfile) == "character") {
-      .Call("XGBoosterLoadModel_R", handle, modelfile, PACKAGE = "xgboost")
+      .Call(XGBoosterLoadModel_R, handle, modelfile[1])
     } else if (typeof(modelfile) == "raw") {
-      .Call("XGBoosterLoadModelFromRaw_R", handle, modelfile, PACKAGE = "xgboost")
-    } else if (class(modelfile) == "xgb.Booster") {
-      modelfile <- xgb.Booster.check(modelfile, saveraw=TRUE)
-      .Call("XGBoosterLoadModelFromRaw_R", handle, modelfile$raw, PACKAGE = "xgboost")
+      .Call(XGBoosterLoadModelFromRaw_R, handle, modelfile)
+    } else if (inherits(modelfile, "xgb.Booster")) {
+      bst <- xgb.Booster.complete(modelfile, saveraw = TRUE)
+      .Call(XGBoosterLoadModelFromRaw_R, handle, bst$raw)
     } else {
       stop("modelfile must be either character filename, or raw booster dump, or xgb.Booster object")
     }
@@ -34,6 +34,17 @@ xgb.handleToBooster <- function(handle, raw = NULL) {
   return(bst)
 }
 
+# Check whether xgb.Booster.handle is null
+# internal utility function
+is.null.handle <- function(handle) {
+  if (!identical(class(handle), "xgb.Booster.handle"))
+    stop("argument type must be xgb.Booster.handle")
+  
+  if (is.null(handle) || .Call(XGCheckNullPtr_R, handle))
+    return(TRUE)
+  return(FALSE)
+}
+
 # Return a verified to be valid handle out of either xgb.Booster.handle or xgb.Booster
 # internal utility function
 xgb.get.handle <- function(object) {
@@ -42,31 +53,65 @@ xgb.get.handle <- function(object) {
     xgb.Booster.handle = object,
     stop("argument must be of either xgb.Booster or xgb.Booster.handle class")
   )
-  if (is.null(handle) || .Call("XGCheckNullPtr_R", handle, PACKAGE="xgboost")) {
+  if (is.null.handle(handle)) {
     stop("invalid xgb.Booster.handle")
   }
   handle
 }
 
-# Check whether an xgb.Booster object is complete
-# internal utility function
-xgb.Booster.check <- function(bst, saveraw = TRUE) {
-  if (class(bst) != "xgb.Booster")
+#' Restore missing parts of an incomplete xgb.Booster object.
+#'
+#' It attempts to complete an \code{xgb.Booster} object by restoring either its missing 
+#' raw model memory dump (when it has no \code{raw} data but its \code{xgb.Booster.handle} is valid)
+#' or its missing internal handle (when its \code{xgb.Booster.handle} is not valid 
+#' but it has a raw Booster memory dump).
+#' 
+#' @param object object of class \code{xgb.Booster}
+#' @param saveraw a flag indicating whether to append \code{raw} Booster memory dump data 
+#'                when it doesn't already exist.
+#' 
+#' @details
+#' 
+#' While this method is primarily for internal use, it might be useful in some practical situations.
+#' 
+#' E.g., when an \code{xgb.Booster} model is saved as an R object and then is loaded as an R object,
+#' its handle (pointer) to an internal xgboost model would be invalid. The majority of xgboost methods 
+#' should still work for such a model object since those methods would be using 
+#' \code{xgb.Booster.complete} internally. However, one might find it to be more efficient to call the  
+#' \code{xgb.Booster.complete} function explicitely once after loading a model as an R-object.
+#' That would prevent further repeated implicit reconstruction of an internal booster model.
+#' 
+#' @return 
+#' An object of \code{xgb.Booster} class.
+#' 
+#' @examples
+#' 
+#' data(agaricus.train, package='xgboost')
+#' bst <- xgboost(data = agaricus.train$data, label = agaricus.train$label, max_depth = 2, 
+#'                eta = 1, nthread = 2, nrounds = 2, objective = "binary:logistic")
+#' saveRDS(bst, "xgb.model.rds")
+#' 
+#' bst1 <- readRDS("xgb.model.rds")
+#' # the handle is invalid:
+#' print(bst1$handle)
+#' 
+#' bst1 <- xgb.Booster.complete(bst1)
+#' # now the handle points to a valid internal booster model:
+#' print(bst1$handle)
+#' 
+#' @export
+xgb.Booster.complete <- function(object, saveraw = TRUE) {
+  if (!inherits(object, "xgb.Booster"))
     stop("argument type must be xgb.Booster")
   
-  isnull <- is.null(bst$handle)
-  if (!isnull) {
-    isnull <- .Call("XGCheckNullPtr_R", bst$handle, PACKAGE="xgboost")
-  }
-  if (isnull) {
-    bst$handle <- xgb.Booster(modelfile = bst$raw)
+  if (is.null.handle(object$handle)) {
+    object$handle <- xgb.Booster.handle(modelfile = object$raw)
   } else {
-    if (is.null(bst$raw) && saveraw)
-      bst$raw <- xgb.save.raw(bst$handle)
+    if (is.null(object$raw) && saveraw)
+      object$raw <- xgb.save.raw(object$handle)
   }
-  return(bst)
+  return(object)
 }
-
 
 #' Predict method for eXtreme Gradient Boosting model
 #' 
@@ -87,8 +132,8 @@ xgb.Booster.check <- function(bst, saveraw = TRUE) {
 #' @param ... Parameters passed to \code{predict.xgb.Booster}
 #' 
 #' @details  
-#' Note that \code{ntreelimit} is not necesserily equal to the number of boosting iterations
-#' and it is not necesserily equal to the number of trees in a model.
+#' Note that \code{ntreelimit} is not necessarily equal to the number of boosting iterations
+#' and it is not necessarily equal to the number of trees in a model.
 #' E.g., in a random forest-like model, \code{ntreelimit} would limit the number of trees.
 #' But for multiclass classification, there are multiple trees per iteration, 
 #' but \code{ntreelimit} limits the number of boosting iterations.
@@ -180,18 +225,19 @@ xgb.Booster.check <- function(bst, saveraw = TRUE) {
 predict.xgb.Booster <- function(object, newdata, missing = NA,
     outputmargin = FALSE, ntreelimit = NULL, predleaf = FALSE, reshape = FALSE, ...) {
 
-  object <- xgb.Booster.check(object, saveraw = FALSE)
-  if (class(newdata) != "xgb.DMatrix")
+  object <- xgb.Booster.complete(object, saveraw = FALSE)
+  if (!inherits(newdata, "xgb.DMatrix"))
     newdata <- xgb.DMatrix(newdata, missing = missing)
   if (is.null(ntreelimit))
     ntreelimit <- NVL(object$best_ntreelimit, 0)
+  if (NVL(object$params[['booster']], '') == 'gblinear')
+    ntreelimit <- 0
   if (ntreelimit < 0)
     stop("ntreelimit cannot be negative")
   
   option <- 0L + 1L * as.logical(outputmargin) + 2L * as.logical(predleaf)
   
-  ret <- .Call("XGBoosterPredict_R", object$handle, newdata, option[1],
-               as.integer(ntreelimit), PACKAGE = "xgboost")
+  ret <- .Call(XGBoosterPredict_R, object$handle, newdata, option[1], as.integer(ntreelimit))
   
   if (length(ret) %% nrow(newdata) != 0)
     stop("prediction length ", length(ret)," is not multiple of nrows(newdata) ", nrow(newdata))
@@ -242,7 +288,7 @@ predict.xgb.Booster.handle <- function(object, ...) {
 #' (from R or any other interface).
 #' In contrast, any R-attribute assigned to an R-object of \code{xgb.Booster} class
 #' would not be saved by \code{xgb.save} because an xgboost model is an external memory object
-#' and its serialization is handled extrnally.
+#' and its serialization is handled externally.
 #' Also, setting an attribute that has the same name as one of xgboost's parameters wouldn't 
 #' change the value of that parameter for a model. 
 #' Use \code{\link{xgb.parameters<-}} to set or change model parameters.
@@ -291,7 +337,7 @@ predict.xgb.Booster.handle <- function(object, ...) {
 xgb.attr <- function(object, name) {
   if (is.null(name) || nchar(as.character(name[1])) == 0) stop("invalid attribute name")
   handle <- xgb.get.handle(object)
-  .Call("XGBoosterGetAttr_R", handle, as.character(name[1]), PACKAGE="xgboost")
+  .Call(XGBoosterGetAttr_R, handle, as.character(name[1]))
 }
 
 #' @rdname xgb.attr
@@ -308,7 +354,7 @@ xgb.attr <- function(object, name) {
       value <- as.character(value[1])
     }
   }
-  .Call("XGBoosterSetAttr_R", handle, as.character(name[1]), value, PACKAGE="xgboost")
+  .Call(XGBoosterSetAttr_R, handle, as.character(name[1]), value)
   if (is(object, 'xgb.Booster') && !is.null(object$raw)) {
     object$raw <- xgb.save.raw(object$handle)
   }
@@ -319,10 +365,10 @@ xgb.attr <- function(object, name) {
 #' @export
 xgb.attributes <- function(object) {
   handle <- xgb.get.handle(object)
-  attr_names <- .Call("XGBoosterGetAttrNames_R", handle, PACKAGE="xgboost")
+  attr_names <- .Call(XGBoosterGetAttrNames_R, handle)
   if (is.null(attr_names)) return(NULL)
   res <- lapply(attr_names, function(x) {
-    .Call("XGBoosterGetAttr_R", handle, x, PACKAGE="xgboost")
+    .Call(XGBoosterGetAttr_R, handle, x)
   })
   names(res) <- attr_names
   res
@@ -339,7 +385,7 @@ xgb.attributes <- function(object) {
   # Q: should we warn a user about non-scalar elements?
   a <- lapply(a, function(x) {
     if (is.null(x)) return(NULL)
-    if (is.numeric(value[1])) {
+    if (is.numeric(x[1])) {
       format(x[1], digits = 17)
     } else {
       as.character(x[1])
@@ -347,7 +393,7 @@ xgb.attributes <- function(object) {
   })
   handle <- xgb.get.handle(object)
   for (i in seq_along(a)) {
-    .Call("XGBoosterSetAttr_R", handle, names(a[i]), a[[i]], PACKAGE="xgboost")
+    .Call(XGBoosterSetAttr_R, handle, names(a[i]), a[[i]])
   }
   if (is(object, 'xgb.Booster') && !is.null(object$raw)) {
     object$raw <- xgb.save.raw(object$handle)
@@ -388,7 +434,7 @@ xgb.attributes <- function(object) {
   p <- lapply(p, function(x) as.character(x)[1])
   handle <- xgb.get.handle(object)
   for (i in seq_along(p)) {
-    .Call("XGBoosterSetParam_R", handle, names(p[i]), p[[i]], PACKAGE = "xgboost")
+    .Call(XGBoosterSetParam_R, handle, names(p[i]), p[[i]])
   }
   if (is(object, 'xgb.Booster') && !is.null(object$raw)) {
     object$raw <- xgb.save.raw(object$handle)
@@ -396,8 +442,8 @@ xgb.attributes <- function(object) {
   object
 }
 
-# Extract # of trees in a model
-# TODO: either add a getter to C-interface, or simply set an 'ntree' attribute after each iteration
+# Extract the number of trees in a model.
+# TODO: either add a getter to C-interface, or simply set an 'ntree' attribute after each iteration.
 # internal utility function
 xgb.ntree <- function(bst) {
   length(grep('^booster', xgb.dump(bst)))
@@ -424,17 +470,16 @@ xgb.ntree <- function(bst) {
 #'
 #' @method print xgb.Booster 
 #' @export
-print.xgb.Booster <- function(x, verbose=FALSE, ...) {
+print.xgb.Booster <- function(x, verbose = FALSE, ...) {
   cat('##### xgb.Booster\n')
   
-  if (is.null(x$handle) || .Call("XGCheckNullPtr_R", x$handle, PACKAGE="xgboost")) {
-    cat("handle is invalid\n")
-    return(x)
-  }
-  
+  valid_handle <- is.null.handle(x$handle)
+  if (!valid_handle)
+    cat("Handle is invalid! Suggest using xgb.Booster.complete\n")
+
   cat('raw: ')
   if (!is.null(x$raw)) {
-    cat(format(object.size(x$raw), units="auto"), '\n')
+    cat(format(object.size(x$raw), units = "auto"), '\n')
   } else {
     cat('NULL\n')
   }
@@ -448,19 +493,21 @@ print.xgb.Booster <- function(x, verbose=FALSE, ...) {
     cat( '  ', 
          paste(names(x$params),
                paste0('"', unlist(x$params), '"'),
-               sep=' = ', collapse=', '), '\n', sep='')
+               sep = ' = ', collapse = ', '), '\n', sep = '')
   }
   # TODO: need an interface to access all the xgboosts parameters
 
-  attrs <- xgb.attributes(x)
+  attrs <- character(0)
+  if (valid_handle)
+    attrs <- xgb.attributes(x)
   if (length(attrs) > 0) {
     cat('xgb.attributes:\n')
     if (verbose) {
       cat( paste(paste0('  ',names(attrs)),
                  paste0('"', unlist(attrs), '"'),
-                 sep=' = ', collapse='\n'), '\n', sep='')
+                 sep = ' = ', collapse = '\n'), '\n', sep = '')
     } else {
-      cat('  ', paste(names(attrs), collapse=', '), '\n', sep='')
+      cat('  ', paste(names(attrs), collapse = ', '), '\n', sep = '')
     }
   }
   
@@ -472,15 +519,19 @@ print.xgb.Booster <- function(x, verbose=FALSE, ...) {
     })
   }
   
-  cat('niter: ', x$niter, '\n', sep='')
+  if (!is.null(x$feature_names))
+    cat('# of features:', length(x$feature_names), '\n')
+  
+  cat('niter: ', x$niter, '\n', sep = '')
   # TODO: uncomment when faster xgb.ntree is implemented
   #cat('ntree: ', xgb.ntree(x), '\n', sep='')
   
-  for (n in setdiff(names(x), c('handle', 'raw', 'call', 'params', 'callbacks','evaluation_log','niter'))) {
+  for (n in setdiff(names(x), c('handle', 'raw', 'call', 'params', 'callbacks',
+                                'evaluation_log','niter','feature_names'))) {
     if (is.atomic(x[[n]])) {
-      cat(n, ': ', x[[n]], '\n', sep='')
+      cat(n, ':', x[[n]], '\n', sep = ' ')
     } else {
-      cat(n, ':\n\t', sep='')
+      cat(n, ':\n\t', sep = ' ')
       print(x[[n]])
     }
   }

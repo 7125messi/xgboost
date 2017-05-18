@@ -1,6 +1,6 @@
 #' Cross Validation
 #' 
-#' The cross valudation function of xgboost
+#' The cross validation function of xgboost
 #' 
 #' @param params the list of parameters. Commonly used ones are:
 #' \itemize{
@@ -16,10 +16,10 @@
 #'
 #'   See \code{\link{xgb.train}} for further details.
 #'   See also demo/ for walkthrough example in R.
-#' @param data takes an \code{xgb.DMatrix} or \code{Matrix} as the input.
+#' @param data takes an \code{xgb.DMatrix}, \code{matrix}, or \code{dgCMatrix} as the input.
 #' @param nrounds the max number of iterations
 #' @param nfold the original dataset is randomly partitioned into \code{nfold} equal size subsamples. 
-#' @param label vector of response values. Should be provided only when data is \code{DMatrix}.
+#' @param label vector of response values. Should be provided only when data is an R-matrix.
 #' @param missing is only used when input is a dense matrix. By default is set to NA, which means 
 #'        that NA values should be considered as 'missing' by the algorithm. 
 #'        Sometimes, 0 or other extreme value might be used to represent missing values.
@@ -129,15 +129,14 @@ xgb.cv <- function(params=list(), data, nrounds, nfold, label = NULL, missing = 
   #if (is.null(params[['eval_metric']]) && is.null(feval))
   #  stop("Either 'eval_metric' or 'feval' must be provided for CV")
   
-  # Labels
-  if (class(data) == 'xgb.DMatrix')
-    labels <- getinfo(data, 'label')
-  if (is.null(labels))
+  # Check the labels
+  if ( (inherits(data, 'xgb.DMatrix') && is.null(getinfo(data, 'label'))) ||
+       (!inherits(data, 'xgb.DMatrix') && is.null(label)))
     stop("Labels must be provided for CV either through xgb.DMatrix, or through 'label=' when 'data' is matrix")
   
   # CV folds
   if(!is.null(folds)) {
-    if(class(folds) != "list" || length(folds) < 2)
+    if(!is.list(folds) || length(folds) < 2)
       stop("'folds' must be a list with 2 or more elements that are vectors of indices for each CV-fold")
     nfold <- length(folds)
   } else {
@@ -154,7 +153,7 @@ xgb.cv <- function(params=list(), data, nrounds, nfold, label = NULL, missing = 
   params <- c(params, list(silent = 1))
   print_every_n <- max( as.integer(print_every_n), 1L)
   if (!has.callbacks(callbacks, 'cb.print.evaluation') && verbose) {
-    callbacks <- add.cb(callbacks, cb.print.evaluation(print_every_n))
+    callbacks <- add.cb(callbacks, cb.print.evaluation(print_every_n, showsd = showsd))
   }
   # evaluation log callback: always is on in CV
   evaluation_log <- list()
@@ -166,12 +165,12 @@ xgb.cv <- function(params=list(), data, nrounds, nfold, label = NULL, missing = 
   if (!is.null(early_stopping_rounds) &&
       !has.callbacks(callbacks, 'cb.early.stop')) {
     callbacks <- add.cb(callbacks, cb.early.stop(early_stopping_rounds, 
-                                                 maximize=maximize, verbose=verbose))
+                                                 maximize = maximize, verbose = verbose))
   }
   # CV-predictions callback
   if (prediction &&
       !has.callbacks(callbacks, 'cb.cv.predict')) {
-    callbacks <- add.cb(callbacks, cb.cv.predict(save_models=FALSE))
+    callbacks <- add.cb(callbacks, cb.cv.predict(save_models = FALSE))
   }
   # Sort the callbacks into categories
   cb <- categorize.callbacks(callbacks)
@@ -182,8 +181,8 @@ xgb.cv <- function(params=list(), data, nrounds, nfold, label = NULL, missing = 
   bst_folds <- lapply(1:length(folds), function(k) {
     dtest  <- slice(dall, folds[[k]])
     dtrain <- slice(dall, unlist(folds[-k]))
-    bst <- xgb.Booster(params, list(dtrain, dtest))
-    list(dtrain=dtrain, bst=bst, watchlist=list(train=dtrain, test=dtest), index=folds[[k]])
+    handle <- xgb.Booster.handle(params, list(dtrain, dtest))
+    list(dtrain = dtrain, bst = handle, watchlist = list(train = dtrain, test=dtest), index = folds[[k]])
   })
   # a "basket" to collect some results from callbacks
   basket <- list()
@@ -213,7 +212,7 @@ xgb.cv <- function(params=list(), data, nrounds, nfold, label = NULL, missing = 
     
     if (stop_condition) break
   }
-  for (f in cb$finalize) f(finalize=TRUE)
+  for (f in cb$finalize) f(finalize = TRUE)
 
   # the CV result
   ret <- list(
@@ -255,8 +254,8 @@ xgb.cv <- function(params=list(), data, nrounds, nfold, label = NULL, missing = 
 #' @rdname print.xgb.cv
 #' @method print xgb.cv.synchronous
 #' @export
-print.xgb.cv.synchronous <- function(x, verbose=FALSE, ...) {
-  cat('##### xgb.cv ', length(x$folds), '-folds\n', sep='')
+print.xgb.cv.synchronous <- function(x, verbose = FALSE, ...) {
+  cat('##### xgb.cv ', length(x$folds), '-folds\n', sep = '')
   
   if (verbose) {
     if (!is.null(x$call)) {
@@ -268,7 +267,7 @@ print.xgb.cv.synchronous <- function(x, verbose=FALSE, ...) {
       cat( '  ', 
            paste(names(x$params), 
                  paste0('"', unlist(x$params), '"'),
-                 sep=' = ', collapse=', '), '\n', sep='')
+                 sep = ' = ', collapse = ', '), '\n', sep = '')
     }
     if (!is.null(x$callbacks) && length(x$callbacks) > 0) {
       cat('callbacks:\n')
@@ -281,7 +280,7 @@ print.xgb.cv.synchronous <- function(x, verbose=FALSE, ...) {
     for (n in c('niter', 'best_iteration', 'best_ntreelimit')) {
       if (is.null(x[[n]])) 
         next
-      cat(n, ': ', x[[n]], '\n', sep='')
+      cat(n, ': ', x[[n]], '\n', sep = '')
     }
 
     if (!is.null(x$pred)) {
